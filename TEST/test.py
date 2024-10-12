@@ -8,32 +8,8 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
-
-# 环境初始化：
-#
-# 使用 gym.make('CartPole-v1') 创建了 CartPole-v1 环境，这是一个常见的强化学习环境。
-# 策略网络：
-#
-# PolicyNetwork 类是一个两层全连接神经网络。它将环境状态作为输入，并输出不同动作的概率。
-# fc1 是第一层全连接层，输入是环境状态的特征，输出维度为 64。
-# fc2 是第二层全连接层，输出动作概率，动作的数量由环境的动作空间大小决定。
-# 优化器：
-#
-# Adam 优化器用于更新策略网络的参数，学习率设置为 1e-2。
-# 策略评估函数 evaluate_policy：
-#
-# evaluate_policy 函数用于评估策略网络的表现，计算若干回合的平均奖励。
-# 每一回合中，策略网络根据当前状态选择动作，执行该动作并累积奖励，直到回合结束。
-# terminated 和 truncated 是新的 gym 版本中的状态标志，表示任务是否由于成功/失败或时间限制而结束。
-# 模型保存：
-#
-# 使用 torch.save 将训练好的策略网络参数保存到文件 'policy_net_model.pth'，便于后续加载模型进行继续训练或评估。
 # # 创建CartPole环境
 env = gym.make('CartPole-v1')
-# 加载模型权重（如果需要的话）
-
-# policy_net.eval()  # 切换到评估模式
-# 修复 numpy bool8 的问题，防止某些版本的 gym 依赖 numpy.bool8 引发错误
 if not hasattr(np, 'bool8'):
     np.bool8 = bool  # 如果 numpy.bool8 不存在，则将其设为标准的 bool 类型
 
@@ -43,10 +19,10 @@ class ReplayBuffer:
 
     def add(self, experience):
         self.buffer.append(experience)
-
     def sample(self, batch_size):
+        if batch_size > len(self.buffer):
+            batch_size = len(self.buffer)
         return random.sample(self.buffer, batch_size)
-
     def size(self):
         return len(self.buffer)
 
@@ -57,18 +33,18 @@ class PolicyNetwork(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(PolicyNetwork, self).__init__()  # 调用父类的初始化方法
         # 定义第一个全连接层，输入维度为input_dim，输出维度为64
-        self.fc1 = nn.Linear(input_dim, 64)
+        self.fc1 = nn.Linear(input_dim, 128)
         # 定义第二个全连接层，输入维度为64，输出维度为output_dim
-        # self.fc2 = nn.Linear(128, 128)
-        self.fc2 = nn.Linear(64, output_dim)  # 输出层
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, output_dim)  # 输出层
     # 前向传播方法，接收状态作为输入，返回动作概率
     def forward(self, state):
         # 将输入状态通过第一个全连接层，并应用ReLU激活函数
         x = torch.relu(self.fc1(state))
-        # x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc2(x))
         # 将经过ReLU激活的输出通过第二个全连接层，并应用softmax函数
         # softmax函数用于将输出转化为概率分布，dim=-1表示在最后一个维度上应用softmax
-        action_probs = torch.softmax(self.fc2(x), dim=-1)
+        action_probs = torch.softmax(self.fc3(x), dim=-1)
         # 返回动作概率分布
         return action_probs
 
@@ -78,13 +54,13 @@ output_dim = env.action_space.n  # 动作空间大小
 # 创建策略网络实例
 policy_net = PolicyNetwork(input_dim, output_dim)
 #加载模型
-policy_net.load_state_dict(torch.load('policy_net_model_.pth',weights_only=True))
+# policy_net.load_state_dict(torch.load('policy_net_model_.pth',weights_only=True))
 # 使用Adam优化器
 optimizer = optim.RMSprop(policy_net.parameters(), lr=1e-2)  # 换成RMSprop
-scheduler = StepLR(optimizer, step_size=100, gamma=0.9)  # 调整学习率调度器
+scheduler = StepLR(optimizer, step_size=150, gamma=0.9)  # 调整学习率调度器
 # 选择动作
 def select_action(state):
-    epsilon = 0.1 # 设置探索概率
+    epsilon = 0.1  # 设置探索概率
     if np.random.rand() < epsilon:
         action = env.action_space.sample()  # 随机探索动作
     else:
@@ -103,9 +79,9 @@ def select_action(state):
             print("Action probabilities contain negative values")
 
         # 根据这个分布随机选择一个动作
-        # action = torch.multinomial(action_probs, num_samples=1).item()
+        action = torch.multinomial(action_probs, num_samples=1).item()
         # 选取概率最高的动作
-        action = torch.argmax(action_probs, dim=1).item()
+        # action = torch.argmax(action_probs, dim=1).item()
     return action
 
 
@@ -169,32 +145,28 @@ def train_policy(episodes):
         discounted_rewards_tensor = torch.FloatTensor(np.array(discounted_rewards))
         actions_tensor = torch.LongTensor(np.array(actions))
         # 计算损失
-        # 开启 anomaly detection
-        # with torch.autograd.detect_anomaly():
         action_probs = policy_net(torch.FloatTensor(np.array(states)))
         action_probs = action_probs.gather(1, actions_tensor.unsqueeze(1)).squeeze()
-        loss = -torch.mean(torch.log(action_probs) * discounted_rewards_tensor)
-        #     print(f"Loss before backward: {loss.item()}")
         advantages = discounted_rewards_tensor - torch.mean(discounted_rewards_tensor)
-        # loss = -torch.mean(torch.log(action_probs) * advantages)
+        loss = -torch.mean(torch.log(action_probs) * advantages)
         entropy_loss = -torch.sum(action_probs * torch.log(action_probs))
-        loss = loss - 0.02 * entropy_loss  # 0.01 是权重，可以调节
+        loss = loss - 0.01 * entropy_loss  # 0.01 是权重，可以调节
+
         # 反向传播和优化
         optimizer.zero_grad()
-        loss.backward()
-        # 添加梯度裁剪
+        # loss.backward()# 添加梯度裁剪
         torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=1.0)  # 限制梯度最大值为 1.0
         optimizer.step()
         avg_reward_history.append(avg_reward)
-        print(f'Episode {i + 1}={episode_reward}, Total Reward: {total_rewards}, Average Reward: {avg_reward}')
+        print(f'Episode {i + 1}={episode_reward}, Total Reward: {total_rewards}, {len(rewards)}Average Reward: {avg_reward}')
 
         # print(f'Episode {i + 1}, Total Reward: {episode_reward}')
         # 检查是否收敛
-        if avg_reward >= best_avg_reward:
+        if avg_reward > best_avg_reward:
             best_avg_reward = avg_reward
             no_improvement_count = 0  # 重置计数
             # 保存模型
-            torch.save(policy_net.state_dict(), 'policy_net_model_.pth')
+            # torch.save(policy_net.state_dict(), 'policy_net_model_.pth')
             print(f'Model saved with average reward: {avg_reward}')
         else:
             no_improvement_count += 1
@@ -205,15 +177,7 @@ def train_policy(episodes):
             break
     return rewards_
 
-
-# 使用上文定义的PolicyNetwork和初始化的环境进行策略评估
-
 rewards_=train_policy(10000)
-
-# 关闭环境
-env.close()
-# 保存模型权重到文件中，以便后续加载或评估
-# torch.save(policy_net.state_dict(), 'policy_net_model.pth')
 
 def validate_policy(env, policy_net, episodes=10):
     """
