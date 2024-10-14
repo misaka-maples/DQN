@@ -7,10 +7,6 @@ def update():
         # 初始化 state 的观测值
         observation = env.reset()
 
-
-
-
-
         while True:
             # 更新可视化环境
             env.render()
